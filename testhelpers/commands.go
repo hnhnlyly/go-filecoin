@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -34,6 +35,8 @@ import (
 const (
 	// DefaultDaemonCmdTimeout is the default timeout for executing commands.
 	DefaultDaemonCmdTimeout = 1 * time.Minute
+	repoName                = "repo"
+	sectorsName             = "sectors"
 )
 
 // Output manages running, inprocess, a filecoin command.
@@ -97,8 +100,7 @@ func RunSuccessLines(td *TestDaemon, args ...string) []string {
 type TestDaemon struct {
 	cmdAddr          string
 	swarmAddr        string
-	repoDir          string
-	sectorDir        string
+	containerDir     string // Path to directory containing repo and sectors
 	genesisFile      string
 	keyFiles         []string
 	withMiner        string
@@ -122,7 +124,12 @@ type TestDaemon struct {
 
 // RepoDir returns the repo directory of the test daemon.
 func (td *TestDaemon) RepoDir() string {
-	return td.repoDir
+	return path.Join(td.containerDir, repoName)
+}
+
+// SectorDir returns the sector root directory of the test daemon.
+func (td *TestDaemon) SectorDir() string {
+	return path.Join(td.containerDir, sectorsName)
 }
 
 // CmdAddr returns the command address of the test daemon.
@@ -155,7 +162,7 @@ func (td *TestDaemon) RunWithStdin(stdin io.Reader, args ...string) *Output {
 		args = strings.Split(args[0], " ")
 	}
 
-	finalArgs := append(args, "--repodir="+td.repoDir, "--cmdapiaddr="+td.cmdAddr)
+	finalArgs := append(args, "--repodir="+td.RepoDir(), "--cmdapiaddr="+td.cmdAddr)
 
 	td.test.Logf("(%s) run: %q\n", td.swarmAddr, strings.Join(finalArgs, " "))
 	cmd := exec.CommandContext(ctx, bin, finalArgs...)
@@ -404,11 +411,7 @@ func (td *TestDaemon) Shutdown() {
 		td.test.Fatalf("Failed to kill daemon %s", err)
 	}
 
-	if td.repoDir == "" {
-		panic("testdaemon had no repodir set")
-	}
-
-	_ = os.RemoveAll(td.repoDir)
+	_ = os.RemoveAll(td.containerDir)
 }
 
 // ShutdownSuccess stops the daemon, asserting that it exited successfully.
@@ -418,7 +421,7 @@ func (td *TestDaemon) ShutdownSuccess() {
 
 	td.assertNoLogErrors()
 
-	_ = os.RemoveAll(td.repoDir)
+	_ = os.RemoveAll(td.containerDir)
 }
 
 func (td *TestDaemon) assertNoLogErrors() {
@@ -448,7 +451,7 @@ func (td *TestDaemon) ShutdownEasy() {
 	tdOut := td.ReadStderr()
 	assert.NoError(td.test, err, tdOut)
 
-	_ = os.RemoveAll(td.repoDir)
+	_ = os.RemoveAll(td.containerDir)
 }
 
 // WaitForAPI polls if the API on the daemon is available, and blocks until
@@ -548,7 +551,7 @@ func (td *TestDaemon) CreateAddress() string {
 
 // Config is a helper to read out the config of the deamon
 func (td *TestDaemon) Config() *config.Config {
-	cfg, err := config.ReadFile(filepath.Join(td.repoDir, "config.json"))
+	cfg, err := config.ReadFile(filepath.Join(td.RepoDir(), "config.json"))
 	require.NoError(td.test, err)
 	return cfg
 }
@@ -688,10 +691,10 @@ func SwarmAddr(addr string) func(*TestDaemon) {
 	}
 }
 
-// RepoDir allows setting the `repoDir` config option on the daemon.
-func RepoDir(dir string) func(*TestDaemon) {
+// ContainerDir sets the `containerDir` path for the daemon.
+func ContainerDir(dir string) func(*TestDaemon) {
 	return func(td *TestDaemon) {
-		td.repoDir = dir
+		td.containerDir = dir
 	}
 }
 
@@ -756,20 +759,8 @@ func NewDaemon(t *testing.T, options ...func(*TestDaemon)) *TestDaemon {
 	// Ensure we have the actual binary
 	filecoinBin := MustGetFilecoinBinary()
 
-	repoDir, err := ioutil.TempDir("", "go-fil-test")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	sectorDir, err := ioutil.TempDir("", "go-fil-test-sectors")
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	td := &TestDaemon{
 		test:        t,
-		repoDir:     repoDir,
-		sectorDir:   sectorDir,
 		init:        true, // we want to init unless told otherwise
 		firstRun:    true,
 		cmdTimeout:  DefaultDaemonCmdTimeout,
@@ -781,9 +772,17 @@ func NewDaemon(t *testing.T, options ...func(*TestDaemon)) *TestDaemon {
 		option(td)
 	}
 
-	repoDirFlag := fmt.Sprintf("--repodir=%s", td.repoDir)
+	// Allocate directory for repo and sectors. If set already it is assumed to exist.
+	if td.containerDir == "" {
+		newDir, err := ioutil.TempDir("", "daemon-test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		td.containerDir = newDir
+	}
 
-	sectorDirFlag := fmt.Sprintf("--sectordir=%s", td.sectorDir)
+	repoDirFlag := fmt.Sprintf("--repodir=%s", td.RepoDir())
+	sectorDirFlag := fmt.Sprintf("--sectordir=%s", td.SectorDir())
 
 	// build command options
 	initopts := []string{repoDirFlag, sectorDirFlag}
