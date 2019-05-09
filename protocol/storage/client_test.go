@@ -15,6 +15,7 @@ import (
 
 	"github.com/filecoin-project/go-filecoin/actor/builtin/miner"
 	"github.com/filecoin-project/go-filecoin/address"
+	"github.com/filecoin-project/go-filecoin/plumbing/strgdls"
 	"github.com/filecoin-project/go-filecoin/porcelain"
 	. "github.com/filecoin-project/go-filecoin/protocol/storage"
 	"github.com/filecoin-project/go-filecoin/protocol/storage/storagedeal"
@@ -106,7 +107,7 @@ func TestProposeDeal(t *testing.T) {
 
 		assert.Equal(t, storagedeal.Accepted, dealResponse.State)
 
-		retrievedDeal := testAPI.DealGet(dealResponse.ProposalCid)
+		retrievedDeal := testAPI.DealGet(context.Background(), dealResponse.ProposalCid)
 
 		assert.Equal(t, retrievedDeal.Response, dealResponse)
 	})
@@ -231,16 +232,20 @@ func (tcn *testClientNode) MakeTestProtocolRequest(ctx context.Context, protocol
 	return nil
 }
 
-func (ctp *clientTestAPI) DealsLs() ([]*storagedeal.Deal, error) {
-	var results []*storagedeal.Deal
-
-	for _, storageDeal := range ctp.deals {
-		results = append(results, storageDeal)
-	}
+func (ctp *clientTestAPI) DealsLs(_ context.Context) (<-chan *strgdls.StorageDealLsResult, error) {
+	results := make(chan *strgdls.StorageDealLsResult)
+	go func() {
+		for _, deal := range ctp.deals {
+			results <- &strgdls.StorageDealLsResult{
+				Deal: *deal,
+			}
+		}
+		close(results)
+	}()
 	return results, nil
 }
 
-func (ctp *clientTestAPI) DealGet(dealCid cid.Cid) *storagedeal.Deal {
+func (ctp *clientTestAPI) DealGet(_ context.Context, dealCid cid.Cid) *storagedeal.Deal {
 	return ctp.deals[dealCid]
 }
 
