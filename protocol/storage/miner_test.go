@@ -235,7 +235,7 @@ func TestDealsAwaitingSeal(t *testing.T) {
 			dealsAwaitingSealDs: repo.NewInMemoryRepo().DealsDatastore(),
 		}
 
-		miner.dealsAwaitingSeal.add(wantSectorID, cid0)
+		miner.dealsAwaitingSeal.add(context.Background(), wantSectorID, cid0)
 
 		require.NoError(t, miner.saveDealsAwaitingSeal())
 		miner.dealsAwaitingSeal = &dealsAwaitingSealStruct{}
@@ -251,15 +251,15 @@ func TestDealsAwaitingSeal(t *testing.T) {
 			FailedSectors:     make(map[uint64]string),
 		}
 		gotCids := []cid.Cid{}
-		dealsAwaitingSeal.onSuccess = func(dealCid cid.Cid, sector *sectorbuilder.SealedSectorMetadata) {
+		dealsAwaitingSeal.onSuccess = func(_ context.Context, dealCid cid.Cid, sector *sectorbuilder.SealedSectorMetadata) {
 			assert.Equal(t, sector, wantSector)
 			gotCids = append(gotCids, dealCid)
 		}
 
-		dealsAwaitingSeal.add(wantSectorID, cid0)
-		dealsAwaitingSeal.add(wantSectorID, cid1)
-		dealsAwaitingSeal.add(someOtherSectorID, cid2)
-		dealsAwaitingSeal.success(wantSector)
+		dealsAwaitingSeal.add(context.Background(), wantSectorID, cid0)
+		dealsAwaitingSeal.add(context.Background(), wantSectorID, cid1)
+		dealsAwaitingSeal.add(context.Background(), someOtherSectorID, cid2)
+		dealsAwaitingSeal.success(context.Background(), wantSector)
 
 		assert.Len(t, gotCids, 2, "onSuccess should've been called twice")
 	})
@@ -271,15 +271,15 @@ func TestDealsAwaitingSeal(t *testing.T) {
 			FailedSectors:     make(map[uint64]string),
 		}
 		gotCids := []cid.Cid{}
-		dealsAwaitingSeal.onSuccess = func(dealCid cid.Cid, sector *sectorbuilder.SealedSectorMetadata) {
+		dealsAwaitingSeal.onSuccess = func(_ context.Context, dealCid cid.Cid, sector *sectorbuilder.SealedSectorMetadata) {
 			assert.Equal(t, sector, wantSector)
 			gotCids = append(gotCids, dealCid)
 		}
 
-		dealsAwaitingSeal.success(wantSector)
-		dealsAwaitingSeal.add(wantSectorID, cid0)
-		dealsAwaitingSeal.add(wantSectorID, cid1) // Shouldn't trigger a call, see add().
-		dealsAwaitingSeal.add(someOtherSectorID, cid2)
+		dealsAwaitingSeal.success(context.Background(), wantSector)
+		dealsAwaitingSeal.add(context.Background(), wantSectorID, cid0)
+		dealsAwaitingSeal.add(context.Background(), wantSectorID, cid1) // Shouldn't trigger a call, see add().
+		dealsAwaitingSeal.add(context.Background(), someOtherSectorID, cid2)
 
 		assert.Len(t, gotCids, 1, "onSuccess should've been called once")
 	})
@@ -291,15 +291,15 @@ func TestDealsAwaitingSeal(t *testing.T) {
 			FailedSectors:     make(map[uint64]string),
 		}
 		gotCids := []cid.Cid{}
-		dealsAwaitingSeal.onFail = func(dealCid cid.Cid, message string) {
+		dealsAwaitingSeal.onFail = func(_ context.Context, dealCid cid.Cid, message string) {
 			assert.Equal(t, message, wantMessage)
 			gotCids = append(gotCids, dealCid)
 		}
 
-		dealsAwaitingSeal.add(wantSectorID, cid0)
-		dealsAwaitingSeal.add(wantSectorID, cid1)
-		dealsAwaitingSeal.fail(wantSectorID, wantMessage)
-		dealsAwaitingSeal.fail(someOtherSectorID, "some message")
+		dealsAwaitingSeal.add(context.Background(), wantSectorID, cid0)
+		dealsAwaitingSeal.add(context.Background(), wantSectorID, cid1)
+		dealsAwaitingSeal.fail(context.Background(), wantSectorID, wantMessage)
+		dealsAwaitingSeal.fail(context.Background(), someOtherSectorID, "some message")
 
 		assert.Len(t, gotCids, 2, "onFail should've been called twice")
 	})
@@ -311,15 +311,15 @@ func TestDealsAwaitingSeal(t *testing.T) {
 			FailedSectors:     make(map[uint64]string),
 		}
 		gotCids := []cid.Cid{}
-		dealsAwaitingSeal.onFail = func(dealCid cid.Cid, message string) {
+		dealsAwaitingSeal.onFail = func(_ context.Context, dealCid cid.Cid, message string) {
 			assert.Equal(t, message, wantMessage)
 			gotCids = append(gotCids, dealCid)
 		}
 
-		dealsAwaitingSeal.fail(wantSectorID, wantMessage)
-		dealsAwaitingSeal.fail(someOtherSectorID, "some message")
-		dealsAwaitingSeal.add(wantSectorID, cid0)
-		dealsAwaitingSeal.add(wantSectorID, cid1) // Shouldn't trigger a call, see add().
+		dealsAwaitingSeal.fail(context.Background(), wantSectorID, wantMessage)
+		dealsAwaitingSeal.fail(context.Background(), someOtherSectorID, "some message")
+		dealsAwaitingSeal.add(context.Background(), wantSectorID, cid0)
+		dealsAwaitingSeal.add(context.Background(), wantSectorID, cid1) // Shouldn't trigger a call, see add().
 
 		assert.Len(t, gotCids, 1, "onFail should've been called once")
 	})
@@ -345,10 +345,10 @@ func TestOnCommitmentAddedToChain(t *testing.T) {
 		piece := &sectorbuilder.PieceInfo{Ref: proposal.PieceRef, Size: 10999, InclusionProof: pip}
 		sector := &sectorbuilder.SealedSectorMetadata{SectorID: sectorID, CommD: commD, Pieces: []*sectorbuilder.PieceInfo{piece}}
 
-		miner.OnCommitmentSent(sector, msgCid, nil)
+		miner.OnCommitmentSent(context.Background(), sector, msgCid, nil)
 
 		// retrieve deal response
-		dealResponse := miner.Query(proposal.Proposal.PieceRef)
+		dealResponse := miner.Query(context.Background(), proposal.Proposal.PieceRef)
 
 		assert.Equal(t, storagedeal.Posted, dealResponse.State, "deal should be in posted state")
 		require.NotNil(t, dealResponse.ProofInfo, "deal should have proof info")
@@ -363,10 +363,10 @@ func TestOnCommitmentAddedToChain(t *testing.T) {
 
 		sector := &sectorbuilder.SealedSectorMetadata{SectorID: sectorID, CommD: commD, Pieces: []*sectorbuilder.PieceInfo{}}
 
-		miner.OnCommitmentSent(sector, msgCid, nil)
+		miner.OnCommitmentSent(context.Background(), sector, msgCid, nil)
 
 		// retrieve deal response
-		dealResponse := miner.Query(proposal.Proposal.PieceRef)
+		dealResponse := miner.Query(context.Background(), proposal.Proposal.PieceRef)
 
 		assert.Equal(t, storagedeal.Posted, dealResponse.State, "deal should be in posted state")
 
@@ -380,10 +380,10 @@ func TestOnCommitmentAddedToChain(t *testing.T) {
 
 		sector := &sectorbuilder.SealedSectorMetadata{SectorID: sectorID, CommD: commD, Pieces: []*sectorbuilder.PieceInfo{}}
 
-		miner.OnCommitmentSent(sector, msgCid, nil)
+		miner.OnCommitmentSent(context.Background(), sector, msgCid, nil)
 
 		// retrieve deal response
-		dealResponse := miner.Query(proposal.Proposal.PieceRef)
+		dealResponse := miner.Query(context.Background(), proposal.Proposal.PieceRef)
 
 		assert.Equal(t, storagedeal.Posted, dealResponse.State, "deal should be in posted state")
 
@@ -550,7 +550,7 @@ func minerWithAcceptedDealTestSetup(t *testing.T, proposalCid cid.Cid, sectorID 
 	// Simulates miner.acceptProposal without going to the network to fetch the data by storing the deal.
 	// Mapping the proposalCid to a sectorId simulates staging the sector.
 	require.NoError(t, porcelainAPI.DealPut(storageDeal))
-	miner.dealsAwaitingSeal.add(sectorID, proposalCid)
+	miner.dealsAwaitingSeal.add(context.Background(), sectorID, proposalCid)
 
 	return porcelainAPI, miner, proposal
 }

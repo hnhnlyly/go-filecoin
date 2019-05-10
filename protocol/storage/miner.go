@@ -380,8 +380,8 @@ func rejectProposal(sm *Miner, p *storagedeal.Proposal, reason string) (*storage
 	return resp, nil
 }
 
-func (sm *Miner) updateDealResponse(proposalCid cid.Cid, f func(*storagedeal.Response)) error {
-	storageDeal := sm.porcelainAPI.DealGet(context.TODO(), proposalCid)
+func (sm *Miner) updateDealResponse(ctx context.Context, proposalCid cid.Cid, f func(*storagedeal.Response)) error {
+	storageDeal := sm.porcelainAPI.DealGet(ctx, proposalCid)
 	if storageDeal == nil {
 		return fmt.Errorf("failed to get retrive deal with proposal CID %s", proposalCid.String())
 	}
@@ -400,7 +400,7 @@ func (sm *Miner) processStorageDeal(proposalCid cid.Cid) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	d := sm.porcelainAPI.DealGet(context.TODO(), proposalCid)
+	d := sm.porcelainAPI.DealGet(ctx, proposalCid)
 	if d == nil {
 		log.Errorf("could not retrieve deal with proposal CID %s", proposalCid.String())
 	}
@@ -416,7 +416,7 @@ func (sm *Miner) processStorageDeal(proposalCid cid.Cid) {
 	log.Debug("Miner.processStorageDeal - FetchGraph")
 	if err := dag.FetchGraph(ctx, d.Proposal.PieceRef, dag.NewDAGService(sm.node.BlockService())); err != nil {
 		log.Errorf("failed to fetch data: %s", err)
-		err := sm.updateDealResponse(proposalCid, func(resp *storagedeal.Response) {
+		err := sm.updateDealResponse(ctx, proposalCid, func(resp *storagedeal.Response) {
 			resp.Message = "Transfer failed"
 			resp.State = storagedeal.Failed
 			// TODO: signature?
@@ -429,7 +429,7 @@ func (sm *Miner) processStorageDeal(proposalCid cid.Cid) {
 
 	fail := func(message, logerr string) {
 		log.Errorf(logerr)
-		err := sm.updateDealResponse(proposalCid, func(resp *storagedeal.Response) {
+		err := sm.updateDealResponse(ctx, proposalCid, func(resp *storagedeal.Response) {
 			resp.Message = message
 			resp.State = storagedeal.Failed
 		})
@@ -467,7 +467,7 @@ func (sm *Miner) processStorageDeal(proposalCid cid.Cid) {
 		return
 	}
 
-	err = sm.updateDealResponse(proposalCid, func(resp *storagedeal.Response) {
+	err = sm.updateDealResponse(ctx, proposalCid, func(resp *storagedeal.Response) {
 		resp.State = storagedeal.Staged
 	})
 	if err != nil {
@@ -476,7 +476,7 @@ func (sm *Miner) processStorageDeal(proposalCid cid.Cid) {
 
 	// Careful: this might update state to success or failure so it should go after
 	// updating state to Staged.
-	sm.dealsAwaitingSeal.add(sectorID, proposalCid)
+	sm.dealsAwaitingSeal.add(ctx, sectorID, proposalCid)
 	if err := sm.saveDealsAwaitingSeal(); err != nil {
 		log.Errorf("could not save deal awaiting seal: %s", err)
 	}
@@ -498,8 +498,8 @@ type dealsAwaitingSealStruct struct {
 	// Maps from sector id to the sector's commitSector message CID
 	CommitmentMessages map[uint64]cid.Cid
 
-	onSuccess func(dealCid cid.Cid, sector *sectorbuilder.SealedSectorMetadata)
-	onFail    func(dealCid cid.Cid, message string)
+	onSuccess func(context.Context, cid.Cid, *sectorbuilder.SealedSectorMetadata)
+	onFail    func(context.Context, cid.Cid, string)
 }
 
 func (sm *Miner) loadDealsAwaitingSeal() error {
@@ -542,12 +542,12 @@ func (dealsAwaitingSeal *dealsAwaitingSealStruct) addCommitmentMessageCid(sector
 	dealsAwaitingSeal.CommitmentMessages[sectorID] = msgCid
 }
 
-func (dealsAwaitingSeal *dealsAwaitingSealStruct) add(sectorID uint64, dealCid cid.Cid) {
+func (dealsAwaitingSeal *dealsAwaitingSealStruct) add(ctx context.Context, sectorID uint64, dealCid cid.Cid) {
 	dealsAwaitingSeal.l.Lock()
 	defer dealsAwaitingSeal.l.Unlock()
 
 	if sector, ok := dealsAwaitingSeal.SuccessfulSectors[sectorID]; ok {
-		dealsAwaitingSeal.onSuccess(dealCid, sector)
+		dealsAwaitingSeal.onSuccess(ctx, dealCid, sector)
 		// Don't keep references to sectors around forever. Assume that at most
 		// one success-before-add call will happen (eg, in a test). Sector sealing
 		// outside of tests is so slow that it shouldn't happen in practice.
@@ -558,7 +558,7 @@ func (dealsAwaitingSeal *dealsAwaitingSealStruct) add(sectorID uint64, dealCid c
 		delete(dealsAwaitingSeal.SuccessfulSectors, sectorID)
 		delete(dealsAwaitingSeal.CommitmentMessages, sectorID)
 	} else if message, ok := dealsAwaitingSeal.FailedSectors[sectorID]; ok {
-		dealsAwaitingSeal.onFail(dealCid, message)
+		dealsAwaitingSeal.onFail(ctx, dealCid, message)
 		// Same as above.
 		delete(dealsAwaitingSeal.FailedSectors, sectorID)
 	} else {
@@ -571,51 +571,51 @@ func (dealsAwaitingSeal *dealsAwaitingSealStruct) add(sectorID uint64, dealCid c
 	}
 }
 
-func (dealsAwaitingSeal *dealsAwaitingSealStruct) success(sector *sectorbuilder.SealedSectorMetadata) {
+func (dealsAwaitingSeal *dealsAwaitingSealStruct) success(ctx context.Context, sector *sectorbuilder.SealedSectorMetadata) {
 	dealsAwaitingSeal.l.Lock()
 	defer dealsAwaitingSeal.l.Unlock()
 
 	dealsAwaitingSeal.SuccessfulSectors[sector.SectorID] = sector
 
 	for _, dealCid := range dealsAwaitingSeal.SectorsToDeals[sector.SectorID] {
-		dealsAwaitingSeal.onSuccess(dealCid, sector)
+		dealsAwaitingSeal.onSuccess(ctx, dealCid, sector)
 	}
 	delete(dealsAwaitingSeal.SectorsToDeals, sector.SectorID)
 }
 
-func (dealsAwaitingSeal *dealsAwaitingSealStruct) fail(sectorID uint64, message string) {
+func (dealsAwaitingSeal *dealsAwaitingSealStruct) fail(ctx context.Context, sectorID uint64, message string) {
 	dealsAwaitingSeal.l.Lock()
 	defer dealsAwaitingSeal.l.Unlock()
 
 	dealsAwaitingSeal.FailedSectors[sectorID] = message
 
 	for _, dealCid := range dealsAwaitingSeal.SectorsToDeals[sectorID] {
-		dealsAwaitingSeal.onFail(dealCid, message)
+		dealsAwaitingSeal.onFail(ctx, dealCid, message)
 	}
 	delete(dealsAwaitingSeal.SectorsToDeals, sectorID)
 }
 
 // OnCommitmentSent is a callback, called when a sector seal message was posted to the chain.
-func (sm *Miner) OnCommitmentSent(sector *sectorbuilder.SealedSectorMetadata, msgCid cid.Cid, err error) {
+func (sm *Miner) OnCommitmentSent(ctx context.Context, sector *sectorbuilder.SealedSectorMetadata, msgCid cid.Cid, err error) {
 	sectorID := sector.SectorID
 	log.Debug("Miner.OnCommitmentSent")
 
 	if err != nil {
 		log.Errorf("failed sealing sector: %d: %s:", sectorID, err)
 		errMsg := fmt.Sprintf("failed sealing sector: %d", sectorID)
-		sm.dealsAwaitingSeal.fail(sector.SectorID, errMsg)
+		sm.dealsAwaitingSeal.fail(ctx, sector.SectorID, errMsg)
 	} else {
 		sm.dealsAwaitingSeal.addCommitmentMessageCid(sectorID, msgCid)
-		sm.dealsAwaitingSeal.success(sector)
+		sm.dealsAwaitingSeal.success(ctx, sector)
 	}
 	if err := sm.saveDealsAwaitingSeal(); err != nil {
 		log.Errorf("failed persisting deals awaiting seal: %s", err)
-		sm.dealsAwaitingSeal.fail(sector.SectorID, "failed persisting deals awaiting seal")
+		sm.dealsAwaitingSeal.fail(ctx, sector.SectorID, "failed persisting deals awaiting seal")
 	}
 }
 
-func (sm *Miner) onCommitSuccess(dealCid cid.Cid, sector *sectorbuilder.SealedSectorMetadata) {
-	pieceInfo, err := sm.findPieceInfo(dealCid, sector)
+func (sm *Miner) onCommitSuccess(ctx context.Context, dealCid cid.Cid, sector *sectorbuilder.SealedSectorMetadata) {
+	pieceInfo, err := sm.findPieceInfo(ctx, dealCid, sector)
 	if err != nil {
 		// log error, but continue to update deal with the information we have
 		log.Errorf("commit succeeded, but could not find piece info %s", err)
@@ -624,7 +624,7 @@ func (sm *Miner) onCommitSuccess(dealCid cid.Cid, sector *sectorbuilder.SealedSe
 	// failure to locate commitmentMessage should not block update
 	commitmentMessage := sm.dealsAwaitingSeal.CommitmentMessages[sector.SectorID]
 
-	err = sm.updateDealResponse(dealCid, func(resp *storagedeal.Response) {
+	err = sm.updateDealResponse(ctx, dealCid, func(resp *storagedeal.Response) {
 
 		resp.State = storagedeal.Posted
 		resp.ProofInfo = &storagedeal.ProofInfo{
@@ -641,8 +641,8 @@ func (sm *Miner) onCommitSuccess(dealCid cid.Cid, sector *sectorbuilder.SealedSe
 }
 
 // search the sector's piece info to find the one for the given deal's piece
-func (sm *Miner) findPieceInfo(dealCid cid.Cid, sector *sectorbuilder.SealedSectorMetadata) (*sectorbuilder.PieceInfo, error) {
-	deal := sm.porcelainAPI.DealGet(context.TODO(), dealCid)
+func (sm *Miner) findPieceInfo(ctx context.Context, dealCid cid.Cid, sector *sectorbuilder.SealedSectorMetadata) (*sectorbuilder.PieceInfo, error) {
+	deal := sm.porcelainAPI.DealGet(ctx, dealCid)
 	if deal == nil || deal.Response.State == storagedeal.Unknown {
 		return nil, errors.Errorf("Could not find deal with deal cid %s", dealCid)
 	}
@@ -655,8 +655,8 @@ func (sm *Miner) findPieceInfo(dealCid cid.Cid, sector *sectorbuilder.SealedSect
 	return nil, errors.Errorf("Deal (%s) piece added to sector %d, but piece info not found after seal", dealCid, sector.SectorID)
 }
 
-func (sm *Miner) onCommitFail(dealCid cid.Cid, message string) {
-	err := sm.updateDealResponse(dealCid, func(resp *storagedeal.Response) {
+func (sm *Miner) onCommitFail(ctx context.Context, dealCid cid.Cid, message string) {
+	err := sm.updateDealResponse(ctx, dealCid, func(resp *storagedeal.Response) {
 		resp.Message = message
 		resp.State = storagedeal.Failed
 	})
@@ -914,8 +914,8 @@ func (sm *Miner) submitPoSt(start, end *types.BlockHeight, seed types.PoStChalle
 }
 
 // Query responds to a query for the proposal referenced by the given cid
-func (sm *Miner) Query(c cid.Cid) *storagedeal.Response {
-	storageDeal := sm.porcelainAPI.DealGet(context.TODO(), c)
+func (sm *Miner) Query(ctx context.Context, c cid.Cid) *storagedeal.Response {
+	storageDeal := sm.porcelainAPI.DealGet(ctx, c)
 	if storageDeal == nil {
 		return &storagedeal.Response{
 			State:   storagedeal.Unknown,
@@ -929,13 +929,15 @@ func (sm *Miner) Query(c cid.Cid) *storagedeal.Response {
 func (sm *Miner) handleQueryDeal(s inet.Stream) {
 	defer s.Close() // nolint: errcheck
 
+	ctx := context.Background()
+
 	var q storagedeal.QueryRequest
 	if err := cbu.NewMsgReader(s).ReadMsg(&q); err != nil {
 		log.Errorf("received invalid query: %s", err)
 		return
 	}
 
-	resp := sm.Query(q.Cid)
+	resp := sm.Query(ctx, q.Cid)
 
 	if err := cbu.NewMsgWriter(s).WriteMsg(resp); err != nil {
 		log.Errorf("failed to write query response: %s", err)
